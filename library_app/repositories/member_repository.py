@@ -1,106 +1,50 @@
-"""
-Repository implementation for Member data access.
-
-This module provides data access patterns for the Member entity using
-SQLAlchemy 2.0 style queries.
-"""
-
 from __future__ import annotations
 
-from typing import Sequence, Optional
-from sqlalchemy import select
+from typing import Sequence
+
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from library_app.db.models import Member
 
 
 class MemberRepository:
-    """Manages database operations for the Member entity."""
+    """Persistence operations for members."""
 
-    def __init__(self, session: Session) -> None:
-        """Initialize the repository with a database session.
+    def get_by_id(self, session: Session, id: int) -> Member | None:
+        """Return a member by primary key."""
+        return session.get(Member, id)
 
-        Args:
-            session: An active SQLAlchemy Session.
-        """
-        self._session = session
+    def get_by_member_id(self, session: Session, member_id: str) -> Member | None:
+        """Return a member by business identifier."""
+        statement = select(Member).where(Member.member_id == member_id)
+        return session.execute(statement).scalar_one_or_none()
 
-    def create(self, member: Member) -> Member:
-        """Persist a new Member entity in the database.
+    def search(self, session: Session, query: str) -> Sequence[Member]:
+        """Search members by member ID, name, phone, national ID, or address."""
+        term = f"%{query.strip()}%"
+        statement = (
+            select(Member)
+            .where(
+                or_(
+                    Member.member_id.ilike(term),
+                    Member.name.ilike(term),
+                    Member.phone.ilike(term),
+                    Member.national_id.ilike(term),
+                    Member.address.ilike(term),
+                )
+            )
+            .order_by(Member.name.asc(), Member.id.asc())
+        )
+        return session.execute(statement).scalars().all()
 
-        Args:
-            member: The Member transient instance to save.
-
-        Returns:
-            The persisted Member entity with its primary key populated.
-        """
-        self._session.add(member)
+    def add(self, session: Session, member: Member) -> Member:
+        """Add a member to the session."""
+        session.add(member)
+        session.flush()
         return member
 
-    def get_by_id(self, member_id: int) -> Optional[Member]:
-        """Retrieve a Member by its primary key (integer database ID).
-
-        Args:
-            member_id: The primary key of the member.
-
-        Returns:
-            The Member entity if found, otherwise None.
-        """
-        return self._session.get(Member, member_id)
-
-    def get_by_member_uid(self, member_uid: str) -> Optional[Member]:
-        """Retrieve a Member by their business key (e.g., custom member string ID).
-
-        Args:
-            member_uid: The custom unique identifier string for the member.
-
-        Returns:
-            The Member entity if found, otherwise None.
-        """
-        stmt = select(Member).where(Member.member_id == member_uid)
-        return self._session.scalars(stmt).first()
-
-    def get_all(self) -> Sequence[Member]:
-        """Retrieve all Member entities from the database.
-
-        Returns:
-            A sequence containing all Members.
-        """
-        stmt = select(Member).order_by(Member.name)
-        return self._session.scalars(stmt).all()
-
-    def search_by_name(self, query: str) -> Sequence[Member]:
-        """Search members containing a query string in their name.
-
-        Args:
-            query: The substring search keyword.
-
-        Returns:
-            A sequence of matching Member entities.
-        """
-        pattern = f"%{query}%"
-        stmt = select(Member).where(Member.name.like(pattern)).order_by(Member.name)
-        return self._session.scalars(stmt).all()
-
-    def delete(self, member: Member) -> None:
-        """Remove a Member entity from the database.
-
-        Args:
-            member: The persistent Member entity to delete.
-        """
-        self._session.delete(member)
-
-    def delete_by_id(self, member_id: int) -> bool:
-        """Remove a Member by its database primary key.
-
-        Args:
-            member_id: The database primary key of the member to delete.
-
-        Returns:
-            True if the member was found and deleted, False otherwise.
-        """
-        member = self.get_by_id(member_id)
-        if member:
-            self.delete(member)
-            return True
-        return False
+    def delete(self, session: Session, member: Member) -> None:
+        """Delete a member from the session."""
+        session.delete(member)
+        session.flush()

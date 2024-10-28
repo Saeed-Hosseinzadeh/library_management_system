@@ -1,7 +1,3 @@
-"""
-Controller for handling member-related UI requests.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -9,106 +5,100 @@ from typing import Sequence
 
 from library_app.controllers.base_controller import ControllerResult
 from library_app.db.models import Member
-from library_app.domain.exceptions import (
-    DuplicateMemberIDError,
-    MemberNotFoundError,
-)
-from library_app.services.member_service import (
-    MemberCreateData,
-    MemberService,
-    MemberUpdateData,
-)
+from library_app.db.session import session_scope
+from library_app.domain.exceptions import DuplicateMemberIDError, MemberNotFoundError, ValidationError
+from library_app.services.member_service import MemberCreateData, MemberService, MemberUpdateData
 
 logger = logging.getLogger(__name__)
 
 
 class MemberController:
-    """Coordinates UI requests for members with the MemberService."""
+    """Member controller."""
 
-    def __init__(self, member_service: MemberService) -> None:
-        """Initialize the controller with its backing service."""
-        self._service = member_service
+    def __init__(self, service: MemberService | None = None) -> None:
+        self.service = service or MemberService()
 
-    def register_member(
-        self,
-        name: str,
-        member_id: str,
-        phone: str = "",
-        address: str = "",
-    ) -> ControllerResult[Member]:
-        """Validate input parameters and register a new library member."""
+    def list_members(self) -> ControllerResult[Sequence[Member]]:
+        """Return all members."""
         try:
-            data = MemberCreateData(
-                name=name,
-                member_id=member_id,
-                phone=phone.strip() or None,
-                address=address.strip() or None,
-            )
-            member = self._service.register_member(data)
-            return ControllerResult.ok(member, f"Member '{member.name}' registered successfully.")
-
-        except DuplicateMemberIDError as e:
-            return ControllerResult.fail(str(e))
-        except ValueError as e:
-            return ControllerResult.fail(f"Validation error: {str(e)}")
-        except Exception as e:
-            logger.exception("Error registering member")
-            return ControllerResult.fail(f"An unexpected error occurred: {str(e)}")
-
-    def get_all_members(self) -> ControllerResult[Sequence[Member]]:
-        """Retrieve all registered members."""
-        try:
-            members = self._service.list_members()
-            return ControllerResult.ok(members)
-        except Exception as e:
-            logger.exception("Failed to retrieve members")
-            return ControllerResult.fail(f"Could not retrieve member list: {str(e)}")
+            with session_scope() as session:
+                members = self.service.list(session)
+                return ControllerResult.ok(members)
+        except Exception:
+            logger.exception("Failed to list members.")
+            return ControllerResult.fail("Failed to list members.")
 
     def search_members(self, query: str) -> ControllerResult[Sequence[Member]]:
-        """Search members by name matching the query."""
-        if not query.strip():
-            return self.get_all_members()
+        """Search members."""
         try:
-            results = self._service.search_members(query)
-            return ControllerResult.ok(results)
-        except ValueError as e:
-            return ControllerResult.fail(f"Search parameter error: {str(e)}")
-        except Exception as e:
-            logger.exception("Member search failed")
-            return ControllerResult.fail(f"An error occurred while searching: {str(e)}")
+            with session_scope() as session:
+                members = self.service.search(session, query)
+                return ControllerResult.ok(members)
+        except Exception:
+            logger.exception("Failed to search members.")
+            return ControllerResult.fail("Failed to search members.")
+
+    def add_member(
+        self,
+        member_id: str,
+        name: str,
+        phone: str | None = None,
+        national_id: str | None = None,
+        address: str | None = None,
+    ) -> ControllerResult[Member]:
+        """Create a member."""
+        try:
+            payload = MemberCreateData(
+                member_id=member_id,
+                name=name,
+                phone=phone,
+                national_id=national_id,
+                address=address,
+            )
+            with session_scope() as session:
+                member = self.service.add(session, payload)
+                return ControllerResult.ok(member, "Member created successfully.")
+        except (ValidationError, DuplicateMemberIDError) as exc:
+            return ControllerResult.fail(str(exc))
+        except Exception:
+            logger.exception("Failed to add member.")
+            return ControllerResult.fail("Failed to add member.")
 
     def update_member(
         self,
-        member_db_id: int,
-        name: str | None = None,
+        member_pk: int,
+        member_id: str,
+        name: str,
         phone: str | None = None,
+        national_id: str | None = None,
         address: str | None = None,
     ) -> ControllerResult[Member]:
-        """Modify profile attributes of a member."""
+        """Update a member."""
         try:
-            data = MemberUpdateData(
+            payload = MemberUpdateData(
+                member_id=member_id,
                 name=name,
                 phone=phone,
+                national_id=national_id,
                 address=address,
             )
-            updated_member = self._service.update_member(member_db_id, data)
-            return ControllerResult.ok(updated_member, "Member profile updated successfully.")
+            with session_scope() as session:
+                member = self.service.update(session, member_pk, payload)
+                return ControllerResult.ok(member, "Member updated successfully.")
+        except (ValidationError, DuplicateMemberIDError, MemberNotFoundError) as exc:
+            return ControllerResult.fail(str(exc))
+        except Exception:
+            logger.exception("Failed to update member.")
+            return ControllerResult.fail("Failed to update member.")
 
-        except MemberNotFoundError as e:
-            return ControllerResult.fail(str(e))
-        except ValueError as e:
-            return ControllerResult.fail(f"Validation error: {str(e)}")
-        except Exception as e:
-            logger.exception("Error updating member profile")
-            return ControllerResult.fail(f"Update failed: {str(e)}")
-
-    def delete_member(self, member_db_id: int) -> ControllerResult[None]:
-        """Deregister a member from the system."""
+    def remove_member(self, member_pk: int) -> ControllerResult[None]:
+        """Delete a member."""
         try:
-            self._service.delete_member(member_db_id)
-            return ControllerResult.ok(message="Member deleted successfully.")
-        except MemberNotFoundError as e:
-            return ControllerResult.fail(str(e))
-        except Exception as e:
-            logger.exception("Error deleting member")
-            return ControllerResult.fail(f"Deletion failed: {str(e)}")
+            with session_scope() as session:
+                self.service.remove(session, member_pk)
+                return ControllerResult.ok(message="Member removed successfully.")
+        except (ValidationError, MemberNotFoundError) as exc:
+            return ControllerResult.fail(str(exc))
+        except Exception:
+            logger.exception("Failed to remove member.")
+            return ControllerResult.fail("Failed to remove member.")

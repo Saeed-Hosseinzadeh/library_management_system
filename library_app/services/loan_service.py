@@ -1,220 +1,128 @@
-"""
-Business service for managing book loan transactions.
-
-This module implements the central borrowing and return workflows of the
-library domain. It ensures that books and members exist, prevents double
-loaning of the same book while active, and records returns consistently
-using domain-specific exceptions.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, timedelta
-from typing import Optional
+from datetime import date
+from typing import Sequence
 
-from sqlalchemy import and_, select
+from sqlalchemy import select
+from sqlalchemy.orm import Session, joinedload
 
 from library_app.db.models import Book, Loan, Member
-from library_app.db.session import session_scope
 from library_app.domain.exceptions import (
     BookAlreadyLoanedError,
     BookNotFoundError,
-    InvalidReturnError,
     LoanNotFoundError,
     MemberNotFoundError,
+    ValidationError,
 )
+from library_app.domain.validators import normalize_isbn, validate_identifier
+from library_app.repositories.book_repository import BookRepository
+from library_app.repositories.loan_repository import LoanRepository
+from library_app.repositories.member_repository import MemberRepository
 
 
-@dataclass(slots=True, frozen=True)
+@dataclass(slots=True)
 class BorrowBookData:
-    """Input data for creating a new loan transaction.
+    """Loan creation payload."""
 
-    Attributes:
-        book_id: Database primary key of the book to loan.
-        member_id: Database primary key of the member borrowing the book.
-        loan_date: Loan start date. Defaults to today's date when omitted.
-        due_date: Optional due date. If omitted, the service can derive it
-            from a default borrowing period.
-        loan_period_days: Default borrowing period used when due_date is not
-            explicitly provided.
-    """
-
-    book_id: int
-    member_id: int
-    loan_date: Optional[date] = None
-    due_date: Optional[date] = None
-    loan_period_days: int = 14
+    member_id: str
+    isbn: str
 
 
 class LoanService:
-    """Service layer for loan and return business operations."""
+    """Loan business logic."""
 
-    def borrow_book(self, data: BorrowBookData) -> Loan:
-        """Borrow a book for a member.
-
-        This workflow validates the existence of the book and member,
-        checks that the book is not already actively loaned out, and then
-        creates a new Loan record inside a single transaction.
-
-        Args:
-            data: Structured input for the borrowing operation.
-
-        Returns:
-            The newly created Loan entity.
-
-        Raises:
-            BookNotFoundError: If the target book does not exist.
-            MemberNotFoundError: If the target member does not exist.
-            BookAlreadyLoanedError: If the book currently has an active loan.
-            ValueError: If date inputs are invalid.
-        """
-        if data.loan_period_days < 1:
-            raise ValueError("loan_period_days must be at least 1.")
-
-        effective_loan_date = data.loan_date or date.today()
-        effective_due_date = data.due_date or (
-            effective_loan_date + timedelta(days=data.loan_period_days)
-        )
-
-        if effective_due_date < effective_loan_date:
-            raise ValueError("due_date must be greater than or equal to loan_date.")
-
-        with session_scope() as session:
-            book = session.get(Book, data.book_id)
-            if book is None:
-                raise BookNotFoundError(f"Book with id '{data.book_id}' was not found.")
-
-            member = session.get(Member, data.member_id)
-            if member is None:
-                raise MemberNotFoundError(
-                    f"Member with id '{data.member_id}' was not found."
-                )
-
-            active_loan_stmt = select(Loan).where(
-                and_(
-                    Loan.book_id == book.id,
-                    Loan.return_date.is_(None),
-                )
-            )
-            active_loan = session.scalars(active_loan_stmt).first()
-            if active_loan is not None:
-                raise BookAlreadyLoanedError(
-                    f"Book with id '{book.id}' is already loaned out."
-                )
-
-            loan = Loan(
-                book_id=book.id,
-                member_id=member.id,
-                loan_date=effective_loan_date,
-                due_date=effective_due_date,
-                return_date=None,
-            )
-            session.add(loan)
-            session.flush()
-            session.refresh(loan)
-            return loan
-
-    def return_book(self, loan_id: int, return_date: Optional[date] = None) -> Loan:
-        """Mark an active loan as returned.
-
-        Args:
-            loan_id: Primary key of the loan transaction.
-            return_date: Optional return date. Defaults to today's date.
-
-        Returns:
-            The updated Loan entity.
-
-        Raises:
-            LoanNotFoundError: If the loan does not exist.
-            InvalidReturnError: If the loan is already returned or the
-                return date is inconsistent.
-        """
-        effective_return_date = return_date or date.today()
-
-        with session_scope() as session:
-            loan = session.get(Loan, loan_id)
-            if loan is None:
-                raise LoanNotFoundError(f"Loan with id '{loan_id}' was not found.")
-
-            if loan.return_date is not None:
-                raise InvalidReturnError(
-                    f"Loan with id '{loan_id}' has already been returned."
-                )
-
-            if effective_return_date < loan.loan_date:
-                raise InvalidReturnError(
-                    "return_date cannot be earlier than the original loan_date."
-                )
-
-            loan.return_date = effective_return_date
-            session.flush()
-            session.refresh(loan)
-            return loan
-
-    def get_active_loan_by_book_id(self, book_id: int) -> Loan:
-        """Retrieve the active loan record for a given book.
-
-        Args:
-            book_id: Database primary key of the book.
-
-        Returns:
-            The active Loan entity for the book.
-
-        Raises:
-            LoanNotFoundError: If the book has no active loan.
-        """
-        with session_scope() as session:
-            stmt = select(Loan).where(
-                and_(
-                    Loan.book_id == book_id,
-                    Loan.return_date.is_(None),
-                )
-            )
-            loan = session.scalars(stmt).first()
-            if loan is None:
-                raise LoanNotFoundError(
-                    f"No active loan found for book id '{book_id}'."
-                )
-            return loan
-
-    def list_active_loans(self) -> list[Loan]:
-        """Return all active loan records.
-
-        Returns:
-            A list of active Loan entities.
-        """
-        with session_scope() as session:
-            stmt = select(Loan).where(Loan.return_date.is_(None)).order_by(Loan.loan_date)
-            return list(session.scalars(stmt).all())
-
-    def list_member_loans(
+    def __init__(
         self,
-        member_id: int,
-        active_only: bool = False,
-    ) -> list[Loan]:
-        """List loans for a given member.
+        loan_repository: LoanRepository | None = None,
+        book_repository: BookRepository | None = None,
+        member_repository: MemberRepository | None = None,
+    ) -> None:
+        self.loan_repository = loan_repository or LoanRepository()
+        self.book_repository = book_repository or BookRepository()
+        self.member_repository = member_repository or MemberRepository()
 
-        Args:
-            member_id: Database primary key of the member.
-            active_only: Whether to limit results to active loans.
+    def get_active_loans(self, session: Session) -> Sequence[Loan]:
+        """Return active loans."""
+        return self.loan_repository.get_active_loans(session)
 
-        Returns:
-            A list of Loan entities for the member.
+    def issue_loan(self, session: Session, data: BorrowBookData) -> Loan:
+        """Create a loan and decrement available quantity."""
+        member_identifier = validate_identifier(data.member_id, "member_id")
+        isbn = normalize_isbn(data.isbn)
 
-        Raises:
-            MemberNotFoundError: If the member does not exist.
-        """
-        with session_scope() as session:
-            member = session.get(Member, member_id)
-            if member is None:
-                raise MemberNotFoundError(
-                    f"Member with id '{member_id}' was not found."
-                )
+        member = self.member_repository.get_by_member_id(session, member_identifier)
+        if member is None:
+            raise MemberNotFoundError("Member not found.")
 
-            stmt = select(Loan).where(Loan.member_id == member.id)
-            if active_only:
-                stmt = stmt.where(Loan.return_date.is_(None))
+        book = self.book_repository.get_by_isbn(session, isbn)
+        if book is None:
+            raise BookNotFoundError("Book not found.")
 
-            stmt = stmt.order_by(Loan.loan_date.desc())
-            return list(session.scalars(stmt).all())
+        if book.quantity <= 0:
+            raise ValidationError("No available copies for this book.")
+
+        active_loan_statement = select(Loan).where(
+            Loan.member_id == member.id,
+            Loan.book_id == book.id,
+            Loan.return_date.is_(None),
+        )
+        active_loan = session.execute(active_loan_statement).scalar_one_or_none()
+        if active_loan is not None:
+            raise BookAlreadyLoanedError("This member already has an active loan for this book.")
+
+        loan = Loan(
+            book_id=book.id,
+            member_id=member.id,
+            loan_date=date.today(),
+            return_date=None,
+        )
+        self.loan_repository.add(session, loan)
+
+        book.quantity -= 1
+        session.flush()
+        session.refresh(
+            loan,
+            attribute_names=["book", "member"],
+        )
+        return self._reload_loan(session, loan.id)
+
+    def terminate_loan(self, session: Session, loan_id: int) -> Loan:
+        """Close a loan and increment available quantity."""
+        loan = self.loan_repository.get_by_id(session, loan_id)
+        if loan is None:
+            raise LoanNotFoundError("Loan not found.")
+
+        if loan.return_date is not None:
+            raise ValidationError("Loan is already terminated.")
+
+        book = loan.book
+        if book is None:
+            book = self.book_repository.get_by_id(session, loan.book_id)
+            if book is None:
+                raise BookNotFoundError("Book not found.")
+
+        loan.return_date = date.today()
+        book.quantity += 1
+
+        if book.quantity > book.copies_total:
+            raise ValidationError("quantity cannot be greater than copies_total.")
+
+        session.flush()
+        return self._reload_loan(session, loan.id)
+
+    @staticmethod
+    def _reload_loan(session: Session, loan_id: int) -> Loan:
+        """Reload a loan with eager-loaded relations."""
+        statement = (
+            select(Loan)
+            .options(
+                joinedload(Loan.book),
+                joinedload(Loan.member),
+            )
+            .where(Loan.id == loan_id)
+        )
+        loan = session.execute(statement).scalar_one_or_none()
+        if loan is None:
+            raise LoanNotFoundError("Loan not found.")
+        return loan

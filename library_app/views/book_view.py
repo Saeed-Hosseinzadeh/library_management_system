@@ -1,172 +1,173 @@
-"""
-Book management view.
-
-Provides:
-- Table grid (Treeview) listing all books.
-- Search bar for filtering books.
-- Input form for adding/updating books.
-- Buttons that interact with BookController via ControllerResult.
-"""
-
-from __future__ import annotations
-
 import tkinter as tk
-from tkinter import ttk, messagebox
-from typing import Sequence, Optional
+from tkinter import messagebox, ttk
 
 from library_app.controllers.book_controller import BookController
-from library_app.db.models import Book
 
 
 class BookView(ttk.Frame):
-    """UI panel for book management operations."""
+    """Book management frame."""
 
-    def __init__(self, parent: tk.Widget, controller: BookController) -> None:
-        """Initialize the book management view.
-
-        Args:
-            parent: Parent Tk widget or frame.
-            controller: BookController instance injected from AppController.
-        """
-        super().__init__(parent)
+    def __init__(self, master, controller: BookController):
+        super().__init__(master, padding=12)
         self.controller = controller
+        self.selected_book_id = None
 
-        # Tkinter variables for form inputs
         self.title_var = tk.StringVar()
         self.author_var = tk.StringVar()
         self.isbn_var = tk.StringVar()
         self.publisher_var = tk.StringVar()
         self.category_var = tk.StringVar()
         self.year_var = tk.StringVar()
-        self.copies_var = tk.StringVar(value="1")
-
+        self.copies_var = tk.StringVar()
+        self.quantity_var = tk.StringVar()
         self.search_var = tk.StringVar()
 
         self._build_layout()
-        self._load_books()
+        self.refresh_books()
 
-    # ----------------------------------------------------------------------
-    # Layout
-    # ----------------------------------------------------------------------
-    def _build_layout(self) -> None:
-        """Build the visual layout (search bar, table, form, buttons)."""
-        # ==================================================================
-        # Search bar
-        # ==================================================================
+    def _build_layout(self):
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(1, weight=1)
+
         search_frame = ttk.Frame(self)
-        search_frame.pack(fill=tk.X, pady=5)
+        search_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        search_frame.columnconfigure(1, weight=1)
 
-        ttk.Label(search_frame, text="Search Books:").pack(side=tk.LEFT, padx=5)
+        ttk.Label(search_frame, text="Search").grid(row=0, column=0, padx=(0, 8))
         search_entry = ttk.Entry(search_frame, textvariable=self.search_var)
-        search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        ttk.Button(search_frame, text="Search", command=self._search_books).pack(side=tk.LEFT, padx=5)
-        ttk.Button(search_frame, text="Reset", command=self._load_books).pack(side=tk.LEFT)
+        search_entry.grid(row=0, column=1, sticky="ew")
+        ttk.Button(search_frame, text="Find", command=self.search_books).grid(row=0, column=2, padx=6)
+        ttk.Button(search_frame, text="Refresh", command=self.refresh_books).grid(row=0, column=3)
 
-        # ==================================================================
-        # Treeview table
-        # ==================================================================
+        body = ttk.Frame(self)
+        body.grid(row=1, column=0, sticky="nsew")
+        body.columnconfigure(0, weight=3)
+        body.columnconfigure(1, weight=2)
+        body.rowconfigure(0, weight=1)
+
         self.tree = ttk.Treeview(
-            self,
-            columns=("id", "title", "author", "isbn", "publisher",
-                     "category", "year", "copies"),
+            body,
+            columns=(
+                "id",
+                "title",
+                "author",
+                "isbn",
+                "publisher",
+                "category",
+                "year",
+                "copies_total",
+                "quantity",
+            ),
             show="headings",
-            height=12,
+            height=18,
         )
+        headings = {
+            "id": "ID",
+            "title": "Title",
+            "author": "Author",
+            "isbn": "ISBN",
+            "publisher": "Publisher",
+            "category": "Category",
+            "year": "Year",
+            "copies_total": "Copies",
+            "quantity": "Available",
+        }
+        widths = {
+            "id": 60,
+            "title": 180,
+            "author": 150,
+            "isbn": 120,
+            "publisher": 130,
+            "category": 110,
+            "year": 80,
+            "copies_total": 80,
+            "quantity": 80,
+        }
+        for key, text in headings.items():
+            self.tree.heading(key, text=text)
+            self.tree.column(key, width=widths[key], anchor="center")
 
-        for col in ("id", "title", "author", "isbn", "publisher", "category", "year", "copies"):
-            self.tree.heading(col, text=col.capitalize())
-            self.tree.column(col, width=120, anchor=tk.CENTER)
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        self.tree.bind("<<TreeviewSelect>>", self.on_select)
 
-        self.tree.pack(fill=tk.BOTH, expand=True, pady=10)
+        y_scroll = ttk.Scrollbar(body, orient="vertical", command=self.tree.yview)
+        y_scroll.grid(row=0, column=1, sticky="ns")
+        self.tree.configure(yscrollcommand=y_scroll.set)
 
-        self.tree.bind("<<TreeviewSelect>>", self._on_tree_select)
+        form = ttk.LabelFrame(body, text="Book Details", padding=12)
+        form.grid(row=0, column=2, sticky="nsew", padx=(12, 0))
+        form.columnconfigure(1, weight=1)
 
-        # ==================================================================
-        # Input form
-        # ==================================================================
-        form_frame = ttk.LabelFrame(self, text="Book Details", padding=10)
-        form_frame.pack(fill=tk.X, pady=10)
+        fields = [
+            ("Title", self.title_var),
+            ("Author", self.author_var),
+            ("ISBN", self.isbn_var),
+            ("Publisher", self.publisher_var),
+            ("Category", self.category_var),
+            ("Publication Year", self.year_var),
+            ("Copies Total", self.copies_var),
+            ("Available Quantity", self.quantity_var),
+        ]
 
-        # Row 1
-        ttk.Label(form_frame, text="Title:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=3)
-        ttk.Entry(form_frame, textvariable=self.title_var).grid(row=0, column=1, sticky=tk.EW, padx=5)
+        for row_index, (label, variable) in enumerate(fields):
+            ttk.Label(form, text=label).grid(row=row_index, column=0, sticky="w", pady=4, padx=(0, 8))
+            ttk.Entry(form, textvariable=variable).grid(row=row_index, column=1, sticky="ew", pady=4)
 
-        ttk.Label(form_frame, text="Author:").grid(row=0, column=2, sticky=tk.W, padx=5)
-        ttk.Entry(form_frame, textvariable=self.author_var).grid(row=0, column=3, sticky=tk.EW, padx=5)
+        actions = ttk.Frame(form)
+        actions.grid(row=len(fields), column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        actions.columnconfigure((0, 1), weight=1)
 
-        # Row 2
-        ttk.Label(form_frame, text="ISBN:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=3)
-        ttk.Entry(form_frame, textvariable=self.isbn_var).grid(row=1, column=1, sticky=tk.EW, padx=5)
+        ttk.Button(actions, text="Add", command=self.add_book).grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        ttk.Button(actions, text="Update", command=self.update_book).grid(row=0, column=1, sticky="ew", padx=(4, 0))
+        ttk.Button(actions, text="Remove", command=self.remove_book).grid(row=1, column=0, sticky="ew", padx=(0, 4), pady=(8, 0))
+        ttk.Button(actions, text="Clear", command=self.clear_form).grid(row=1, column=1, sticky="ew", padx=(4, 0), pady=(8, 0))
 
-        ttk.Label(form_frame, text="Publisher:").grid(row=1, column=2, sticky=tk.W, padx=5)
-        ttk.Entry(form_frame, textvariable=self.publisher_var).grid(row=1, column=3, sticky=tk.EW, padx=5)
+    def _to_int_or_none(self, value: str):
+        value = value.strip()
+        return int(value) if value else None
 
-        # Row 3
-        ttk.Label(form_frame, text="Category:").grid(row=2, column=0, sticky=tk.W, padx=5, pady=3)
-        ttk.Entry(form_frame, textvariable=self.category_var).grid(row=2, column=1, sticky=tk.EW, padx=5)
+    def _collect_payload(self) -> dict:
+        return {
+            "title": self.title_var.get(),
+            "author": self.author_var.get(),
+            "isbn": self.isbn_var.get(),
+            "publisher": self.publisher_var.get().strip() or None,
+            "category": self.category_var.get().strip() or None,
+            "publication_year": self._to_int_or_none(self.year_var.get()),
+            "copies_total": int(self.copies_var.get().strip()),
+            "quantity": int(self.quantity_var.get().strip()),
+        }
 
-        ttk.Label(form_frame, text="Year:").grid(row=2, column=2, sticky=tk.W, padx=5)
-        ttk.Entry(form_frame, textvariable=self.year_var).grid(row=2, column=3, sticky=tk.EW, padx=5)
+    def _show_error(self, result):
+        messagebox.showerror("Error", result.message or "Operation failed.")
 
-        # Row 4
-        ttk.Label(form_frame, text="Copies:").grid(row=3, column=0, sticky=tk.W, padx=5, pady=3)
-        ttk.Entry(form_frame, textvariable=self.copies_var).grid(row=3, column=1, sticky=tk.EW, padx=5)
-
-        for i in range(4):
-            form_frame.columnconfigure(i, weight=1)
-
-        # ==================================================================
-        # Buttons
-        # ==================================================================
-        btn_frame = ttk.Frame(self)
-        btn_frame.pack(fill=tk.X, pady=10)
-
-        ttk.Button(btn_frame, text="Add Book", command=self._add_book).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_frame, text="Update Selected", command=self._update_book).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_frame, text="Delete Selected", command=self._delete_book).pack(side=tk.LEFT, padx=5)
-
-    # ----------------------------------------------------------------------
-    # Data Loading / Search
-    # ----------------------------------------------------------------------
-    def _load_books(self) -> None:
-        """Load all books into the Treeview."""
-        self.tree.delete(*self.tree.get_children())
-        result = self.controller.get_all_books()
-
+    def refresh_books(self):
+        result = self.controller.list_books()
         if not result.success:
-            messagebox.showerror("Error", result.message)
+            self._show_error(result)
             return
+        self._load_books(result.data or [])
 
-        for book in result.data or []:
-            self.tree.insert(
-                "",
-                tk.END,
-                values=(
-                    book.id,
-                    book.title,
-                    book.author,
-                    book.isbn,
-                    book.publisher or "",
-                    book.category or "",
-                    book.publication_year or "",
-                    book.copies_total,
-                ),
-            )
-
-    def _search_books(self) -> None:
-        """Search for books and reload the Treeview."""
+    def search_books(self):
         query = self.search_var.get().strip()
-        result = self.controller.search_books(query)
-
-        self.tree.delete(*self.tree.get_children())
-        if not result.success:
-            messagebox.showerror("Search Error", result.message)
+        if not query:
+            self.refresh_books()
             return
+        result = self.controller.search_books(query)
+        if not result.success:
+            self._show_error(result)
+            return
+        self._load_books(result.data or [])
 
-        for book in result.data or []:
+    def _load_books(self, books):
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+
+        for book in books:
             self.tree.insert(
                 "",
-                tk.END,
+                "end",
+                iid=str(book.id),
                 values=(
                     book.id,
                     book.title,
@@ -176,105 +177,80 @@ class BookView(ttk.Frame):
                     book.category or "",
                     book.publication_year or "",
                     book.copies_total,
+                    book.quantity,
                 ),
             )
 
-    # ----------------------------------------------------------------------
-    # Tree Selection -> load into form
-    # ----------------------------------------------------------------------
-    def _on_tree_select(self, event: tk.Event) -> None:
-        """Load selected book data into input fields."""
-        selected = self.tree.selection()
-        if not selected:
+    def on_select(self, _event=None):
+        selection = self.tree.selection()
+        if not selection:
             return
 
-        values = self.tree.item(selected[0], "values")
-        (
-            _id,
-            title,
-            author,
-            isbn,
-            publisher,
-            category,
-            year,
-            copies,
-        ) = values
+        item_id = selection[0]
+        values = self.tree.item(item_id, "values")
+        self.selected_book_id = int(values[0])
 
-        self.title_var.set(title)
-        self.author_var.set(author)
-        self.isbn_var.set(isbn)
-        self.publisher_var.set(publisher)
-        self.category_var.set(category)
-        self.year_var.set(year)
-        self.copies_var.set(copies)
+        self.title_var.set(values[1])
+        self.author_var.set(values[2])
+        self.isbn_var.set(values[3])
+        self.publisher_var.set(values[4])
+        self.category_var.set(values[5])
+        self.year_var.set(values[6])
+        self.copies_var.set(values[7])
+        self.quantity_var.set(values[8])
 
-    # ----------------------------------------------------------------------
-    # Controller Actions
-    # ----------------------------------------------------------------------
-    def _get_selected_book_id(self) -> Optional[int]:
-        """Return selected book ID from Treeview, or None."""
-        selected = self.tree.selection()
-        if not selected:
-            return None
+    def add_book(self):
+        try:
+            payload = self._collect_payload()
+            result = self.controller.add_book(**payload)
+            if not result.success:
+                self._show_error(result)
+                return
+            self.clear_form()
+            self.refresh_books()
+        except Exception as exc:
+            messagebox.showerror("Error", str(exc))
 
-        values = self.tree.item(selected[0], "values")
-        return int(values[0])
-
-    def _add_book(self) -> None:
-        """Call BookController.add_book using form input."""
-        result = self.controller.add_book(
-            title=self.title_var.get(),
-            author=self.author_var.get(),
-            isbn=self.isbn_var.get(),
-            publisher=self.publisher_var.get(),
-            category=self.category_var.get(),
-            publication_year=self.year_var.get(),
-            copies_total=int(self.copies_var.get()),
-        )
-
-        if result.success:
-            messagebox.showinfo("Success", result.message)
-            self._load_books()
-        else:
-            messagebox.showerror("Error Adding Book", result.message)
-
-    def _update_book(self) -> None:
-        """Update the selected book record."""
-        book_id = self._get_selected_book_id()
-        if book_id is None:
-            messagebox.showwarning("No Selection", "Please select a book to update.")
+    def update_book(self):
+        if self.selected_book_id is None:
+            messagebox.showerror("Error", "Select a book first.")
             return
 
-        result = self.controller.update_book(
-            book_id=book_id,
-            title=self.title_var.get(),
-            author=self.author_var.get(),
-            isbn=self.isbn_var.get(),
-            publisher=self.publisher_var.get(),
-            category=self.category_var.get(),
-            publication_year=self.year_var.get(),
-            copies_total=int(self.copies_var.get()),
-        )
+        try:
+            payload = self._collect_payload()
+            result = self.controller.update_book(self.selected_book_id, **payload)
+            if not result.success:
+                self._show_error(result)
+                return
+            self.clear_form()
+            self.refresh_books()
+        except Exception as exc:
+            messagebox.showerror("Error", str(exc))
 
-        if result.success:
-            messagebox.showinfo("Success", result.message)
-            self._load_books()
-        else:
-            messagebox.showerror("Update Error", result.message)
-
-    def _delete_book(self) -> None:
-        """Delete the selected book record."""
-        book_id = self._get_selected_book_id()
-        if book_id is None:
-            messagebox.showwarning("No Selection", "Please select a book to delete.")
+    def remove_book(self):
+        if self.selected_book_id is None:
+            messagebox.showerror("Error", "Select a book first.")
             return
 
-        if not messagebox.askyesno("Confirm Delete", "Delete this book permanently?"):
+        if not messagebox.askyesno("Confirm", "Remove selected book?"):
             return
 
-        result = self.controller.delete_book(book_id)
-        if result.success:
-            messagebox.showinfo("Success", result.message)
-            self._load_books()
-        else:
-            messagebox.showerror("Delete Error", result.message)
+        result = self.controller.remove_book(self.selected_book_id)
+        if not result.success:
+            self._show_error(result)
+            return
+
+        self.clear_form()
+        self.refresh_books()
+
+    def clear_form(self):
+        self.selected_book_id = None
+        self.title_var.set("")
+        self.author_var.set("")
+        self.isbn_var.set("")
+        self.publisher_var.set("")
+        self.category_var.set("")
+        self.year_var.set("")
+        self.copies_var.set("")
+        self.quantity_var.set("")
+        self.tree.selection_remove(self.tree.selection())

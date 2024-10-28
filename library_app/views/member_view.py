@@ -1,225 +1,217 @@
-"""
-Member management view.
-
-Provides:
-- Table grid (Treeview) listing all registered library members.
-- Search interface filtering members by name or ID.
-- Registration and profiling form for member details.
-- Buttons interacting with MemberController using ControllerResult.
-"""
-
-from __future__ import annotations
-
 import tkinter as tk
 from tkinter import messagebox, ttk
-from typing import Optional
 
 from library_app.controllers.member_controller import MemberController
-from library_app.db.models import Member
 
 
 class MemberView(ttk.Frame):
-    """UI panel for library member management operations."""
+    """Member management frame."""
 
-    def __init__(self, parent: tk.Widget, controller: MemberController) -> None:
-        """Initialize the member view.
-
-        Args:
-            parent: Parent Tk widget or frame.
-            controller: MemberController instance injected from AppController.
-        """
-        super().__init__(parent)
+    def __init__(self, master, controller: MemberController):
+        super().__init__(master, padding=12)
         self.controller = controller
+        self.selected_member_id = None
 
-        # Form variables
-        self.name_var = tk.StringVar()
         self.member_id_var = tk.StringVar()
+        self.name_var = tk.StringVar()
         self.phone_var = tk.StringVar()
+        self.national_id_var = tk.StringVar()
         self.address_var = tk.StringVar()
-
         self.search_var = tk.StringVar()
 
         self._build_layout()
-        self._load_members()
+        self.refresh_members()
 
-    def _build_layout(self) -> None:
-        """Build the member view layout hierarchy."""
-        # ==================================================================
-        # Search Component
-        # ==================================================================
+    def _build_layout(self):
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(1, weight=1)
+
         search_frame = ttk.Frame(self)
-        search_frame.pack(fill=tk.X, pady=5)
+        search_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        search_frame.columnconfigure(1, weight=1)
 
-        ttk.Label(search_frame, text="Search Members:").pack(side=tk.LEFT, padx=5)
-        search_entry = ttk.Entry(search_frame, textvariable=self.search_var)
-        search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        ttk.Button(search_frame, text="Search", command=self._search_members).pack(side=tk.LEFT, padx=5)
-        ttk.Button(search_frame, text="Reset", command=self._load_members).pack(side=tk.LEFT)
+        ttk.Label(search_frame, text="Search").grid(row=0, column=0, padx=(0, 8))
+        ttk.Entry(search_frame, textvariable=self.search_var).grid(row=0, column=1, sticky="ew")
+        ttk.Button(search_frame, text="Find", command=self.search_members).grid(row=0, column=2, padx=6)
+        ttk.Button(search_frame, text="Refresh", command=self.refresh_members).grid(row=0, column=3)
 
-        # ==================================================================
-        # Members Grid
-        # ==================================================================
+        body = ttk.Frame(self)
+        body.grid(row=1, column=0, sticky="nsew")
+        body.columnconfigure(0, weight=3)
+        body.columnconfigure(2, weight=2)
+        body.rowconfigure(0, weight=1)
+
         self.tree = ttk.Treeview(
-            self,
-            columns=("db_id", "member_id", "name", "phone", "address"),
+            body,
+            columns=("id", "member_id", "name", "phone", "national_id", "address"),
             show="headings",
-            height=12,
+            height=18,
         )
+        headings = {
+            "id": "ID",
+            "member_id": "Member ID",
+            "name": "Name",
+            "phone": "Phone",
+            "national_id": "National ID",
+            "address": "Address",
+        }
+        widths = {
+            "id": 60,
+            "member_id": 110,
+            "name": 170,
+            "phone": 120,
+            "national_id": 120,
+            "address": 220,
+        }
+        for key, text in headings.items():
+            self.tree.heading(key, text=text)
+            self.tree.column(key, width=widths[key], anchor="center")
 
-        for col in ("db_id", "member_id", "name", "phone", "address"):
-            self.tree.heading(col, text=col.replace("_", " ").upper())
-            self.tree.column(col, width=150, anchor=tk.CENTER)
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        self.tree.bind("<<TreeviewSelect>>", self.on_select)
 
-        self.tree.pack(fill=tk.BOTH, expand=True, pady=10)
-        self.tree.bind("<<TreeviewSelect>>", self._on_tree_select)
+        y_scroll = ttk.Scrollbar(body, orient="vertical", command=self.tree.yview)
+        y_scroll.grid(row=0, column=1, sticky="ns")
+        self.tree.configure(yscrollcommand=y_scroll.set)
 
-        # ==================================================================
-        # Data Entry Form
-        # ==================================================================
-        form_frame = ttk.LabelFrame(self, text="Member Details", padding=10)
-        form_frame.pack(fill=tk.X, pady=10)
+        form = ttk.LabelFrame(body, text="Member Details", padding=12)
+        form.grid(row=0, column=2, sticky="nsew", padx=(12, 0))
+        form.columnconfigure(1, weight=1)
 
-        # Form grid layout
-        ttk.Label(form_frame, text="Name:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=3)
-        ttk.Entry(form_frame, textvariable=self.name_var).grid(row=0, column=1, sticky=tk.EW, padx=5)
+        fields = [
+            ("Member ID", self.member_id_var),
+            ("Name", self.name_var),
+            ("Phone", self.phone_var),
+            ("National ID", self.national_id_var),
+            ("Address", self.address_var),
+        ]
 
-        ttk.Label(form_frame, text="Library Card ID:").grid(row=0, column=2, sticky=tk.W, padx=5)
-        ttk.Entry(form_frame, textvariable=self.member_id_var).grid(row=0, column=3, sticky=tk.EW, padx=5)
+        for row_index, (label, variable) in enumerate(fields):
+            ttk.Label(form, text=label).grid(row=row_index, column=0, sticky="w", pady=4, padx=(0, 8))
+            ttk.Entry(form, textvariable=variable).grid(row=row_index, column=1, sticky="ew", pady=4)
 
-        ttk.Label(form_frame, text="Phone:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=3)
-        ttk.Entry(form_frame, textvariable=self.phone_var).grid(row=1, column=1, sticky=tk.EW, padx=5)
+        actions = ttk.Frame(form)
+        actions.grid(row=len(fields), column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        actions.columnconfigure((0, 1), weight=1)
 
-        ttk.Label(form_frame, text="Address:").grid(row=1, column=2, sticky=tk.W, padx=5)
-        ttk.Entry(form_frame, textvariable=self.address_var).grid(row=1, column=3, sticky=tk.EW, padx=5)
+        ttk.Button(actions, text="Add", command=self.add_member).grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        ttk.Button(actions, text="Update", command=self.update_member).grid(row=0, column=1, sticky="ew", padx=(4, 0))
+        ttk.Button(actions, text="Remove", command=self.remove_member).grid(row=1, column=0, sticky="ew", padx=(0, 4), pady=(8, 0))
+        ttk.Button(actions, text="Clear", command=self.clear_form).grid(row=1, column=1, sticky="ew", padx=(4, 0), pady=(8, 0))
 
-        for i in range(4):
-            form_frame.columnconfigure(i, weight=1)
+    def _collect_payload(self) -> dict:
+        return {
+            "member_id": self.member_id_var.get(),
+            "name": self.name_var.get(),
+            "phone": self.phone_var.get().strip() or None,
+            "national_id": self.national_id_var.get().strip() or None,
+            "address": self.address_var.get().strip() or None,
+        }
 
-        # ==================================================================
-        # Operations Buttons
-        # ==================================================================
-        btn_frame = ttk.Frame(self)
-        btn_frame.pack(fill=tk.X, pady=5)
+    def _show_error(self, result):
+        messagebox.showerror("Error", result.message or "Operation failed.")
 
-        ttk.Button(btn_frame, text="Register Member", command=self._register_member).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_frame, text="Update Selected", command=self._update_member).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_frame, text="Delete Selected", command=self._delete_member).pack(side=tk.LEFT, padx=5)
-
-    def _load_members(self) -> None:
-        """Load all members from controller into the table."""
-        self.tree.delete(*self.tree.get_children())
-        result = self.controller.get_all_members()
-
+    def refresh_members(self):
+        result = self.controller.list_members()
         if not result.success:
-            messagebox.showerror("Error Loading Members", result.message)
+            self._show_error(result)
             return
+        self._load_members(result.data or [])
 
-        for member in result.data or []:
-            self.tree.insert(
-                "",
-                tk.END,
-                values=(
-                    member.id,
-                    member.member_id,
-                    member.name,
-                    member.phone or "",
-                    member.address or "",
-                ),
-            )
-
-    def _search_members(self) -> None:
-        """Query and filter list view."""
+    def search_members(self):
         query = self.search_var.get().strip()
-        result = self.controller.search_members(query)
-
-        self.tree.delete(*self.tree.get_children())
-        if not result.success:
-            messagebox.showerror("Search Error", result.message)
+        if not query:
+            self.refresh_members()
             return
+        result = self.controller.search_members(query)
+        if not result.success:
+            self._show_error(result)
+            return
+        self._load_members(result.data or [])
 
-        for member in result.data or []:
+    def _load_members(self, members):
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+
+        for member in members:
             self.tree.insert(
                 "",
-                tk.END,
+                "end",
+                iid=str(member.id),
                 values=(
                     member.id,
                     member.member_id,
                     member.name,
                     member.phone or "",
+                    member.national_id or "",
                     member.address or "",
                 ),
             )
 
-    def _on_tree_select(self, event: tk.Event) -> None:
-        """Populate the details form when a table row is chosen."""
-        selected = self.tree.selection()
-        if not selected:
+    def on_select(self, _event=None):
+        selection = self.tree.selection()
+        if not selection:
             return
 
-        values = self.tree.item(selected[0], "values")
-        _, member_id, name, phone, address = values
+        item_id = selection[0]
+        values = self.tree.item(item_id, "values")
+        self.selected_member_id = int(values[0])
 
-        self.name_var.set(name)
-        self.member_id_var.set(member_id)
-        self.phone_var.set(phone)
-        self.address_var.set(address)
+        self.member_id_var.set(values[1])
+        self.name_var.set(values[2])
+        self.phone_var.set(values[3])
+        self.national_id_var.set(values[4])
+        self.address_var.set(values[5])
 
-    def _get_selected_db_id(self) -> Optional[int]:
-        """Return the database primary key for the selected member row."""
-        selected = self.tree.selection()
-        if not selected:
-            return None
-        values = self.tree.item(selected[0], "values")
-        return int(values[0])
+    def add_member(self):
+        try:
+            payload = self._collect_payload()
+            result = self.controller.add_member(**payload)
+            if not result.success:
+                self._show_error(result)
+                return
+            self.clear_form()
+            self.refresh_members()
+        except Exception as exc:
+            messagebox.showerror("Error", str(exc))
 
-    def _register_member(self) -> None:
-        """Submit enrollment input to the member service."""
-        result = self.controller.register_member(
-            name=self.name_var.get(),
-            member_id=self.member_id_var.get(),
-            phone=self.phone_var.get(),
-            address=self.address_var.get(),
-        )
-
-        if result.success:
-            messagebox.showinfo("Success", result.message)
-            self._load_members()
-        else:
-            messagebox.showerror("Registration Error", result.message)
-
-    def _update_member(self) -> None:
-        """Modify profiling attributes of the chosen member."""
-        db_id = self._get_selected_db_id()
-        if db_id is None:
-            messagebox.showwarning("No Selection", "Please select a member to update.")
+    def update_member(self):
+        if self.selected_member_id is None:
+            messagebox.showerror("Error", "Select a member first.")
             return
 
-        result = self.controller.update_member(
-            member_db_id=db_id,
-            name=self.name_var.get(),
-            phone=self.phone_var.get(),
-            address=self.address_var.get(),
-        )
+        try:
+            payload = self._collect_payload()
+            result = self.controller.update_member(self.selected_member_id, **payload)
+            if not result.success:
+                self._show_error(result)
+                return
+            self.clear_form()
+            self.refresh_members()
+        except Exception as exc:
+            messagebox.showerror("Error", str(exc))
 
-        if result.success:
-            messagebox.showinfo("Success", result.message)
-            self._load_members()
-        else:
-            messagebox.showerror("Update Error", result.message)
-
-    def _delete_member(self) -> None:
-        """Delete member database entry."""
-        db_id = self._get_selected_db_id()
-        if db_id is None:
-            messagebox.showwarning("No Selection", "Please select a member to deregister.")
+    def remove_member(self):
+        if self.selected_member_id is None:
+            messagebox.showerror("Error", "Select a member first.")
             return
 
-        if not messagebox.askyesno("Confirm Delete", "Remove this member catalog entry?"):
+        if not messagebox.askyesno("Confirm", "Remove selected member?"):
             return
 
-        result = self.controller.delete_member(db_id)
-        if result.success:
-            messagebox.showinfo("Success", result.message)
-            self._load_members()
-        else:
-            messagebox.showerror("Deletion Error", result.message)
+        result = self.controller.remove_member(self.selected_member_id)
+        if not result.success:
+            self._show_error(result)
+            return
+
+        self.clear_form()
+        self.refresh_members()
+
+    def clear_form(self):
+        self.selected_member_id = None
+        self.member_id_var.set("")
+        self.name_var.set("")
+        self.phone_var.set("")
+        self.national_id_var.set("")
+        self.address_var.set("")
+        self.tree.selection_remove(self.tree.selection())
