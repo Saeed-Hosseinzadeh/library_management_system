@@ -5,7 +5,15 @@ A robust, enterprise-grade Desktop Library Management System built with **Python
 The project demonstrates production-ready patterns, including explicit Data Transfer Objects (DTOs), transactional session scopes (Unit of Work approximation), structured Domain Validation, custom Exceptions, and full inversion of control capability for unit testing.
 
 ---
+---
 
+## 🖥️ Application Demo
+
+Here is a quick walkthrough of the Enterprise Library Management System, showcasing the end-to-end flow of adding books, registering members, issuing loans, and running the automated test suite:
+
+![Library Management System Demo](demo.gif)
+
+---
 ## 🏗️ Architecture & Component Design
 
 The system is rigorously isolated into distinctive conceptual layers to guarantee maximum maintainability, loose coupling, and individual component testability.
